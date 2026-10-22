@@ -1,0 +1,4 @@
+category,name,description,price,currency,spice_level,is_vegetarian,is_vegan,is_jain,is_gluten_free,is_halal,allergens,is_bestseller,is_available
+Starters,Paneer Tikka,Grilled cottage cheese with spices,280,INR,medium,true,false,false,true,true,{dairy},true,true
+Mains,Dal Tadka,Yellow lentils tempered with cumin,220,INR,mild,true,true,false,true,true,{},false,true
+Mains,Chicken Biryani,Basmati rice layered with chicken,340,INR,hot,false,false,false,true,true,{dairy;nuts},true,true
