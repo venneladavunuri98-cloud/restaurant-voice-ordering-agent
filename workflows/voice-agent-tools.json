@@ -1,0 +1,2029 @@
+{
+  "name": "Restaurant Voice Ordering Agent – Tool Backend",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "getMenu",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "d74423f8-8c6a-484e-8b3b-1995c89bdaeb",
+      "name": "getMenu: Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        3504,
+        192
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "httpHeaderAuth (configure in n8n)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function genUUID() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\nconst body = $input.first().json.body || {};\nconst toolCall = (body.message && body.message.toolCalls && body.message.toolCalls[0]) || null;\nconst args = toolCall ? (toolCall.function.arguments || {}) : body;\nconst toolCallId = (toolCall && toolCall.id) || args.tool_call_id || genUUID();\nconst callId = args.call_id || args.session_id || args.conversation_id || args.call_sid || body.call_id || body.session_id || body.call_sid || null;\nconst calledNumber = args.to_number || body.to_number || (body.message && body.message.call && body.message.call.phoneNumber) || null;\nreturn [{ json: { callId, toolCallId, calledNumber, ...args } }];"
+      },
+      "id": "2423701c-b490-467b-8fca-91ef4876fd37",
+      "name": "getMenu: Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3728,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH resolved AS (\n  SELECT bpn.branch_id FROM voiceai.branch_phone_numbers bpn\n  WHERE bpn.phone_number = $2 AND bpn.is_active = true\n  LIMIT 1\n)\nINSERT INTO voiceai.calls (call_id, branch_id, started_at)\nSELECT $1, COALESCE((SELECT branch_id FROM resolved), $3::uuid, '97004c8f-e3fe-41d5-88ef-52fd17c58352'::uuid), now()\nWHERE $1 IS NOT NULL\nON CONFLICT (call_id) DO UPDATE\n  SET branch_id = COALESCE(voiceai.calls.branch_id, EXCLUDED.branch_id)\nRETURNING branch_id;",
+        "options": {
+          "queryReplacement": "={{ [$json.callId, $json.calledNumber, $json.branch_id || null] }}"
+        }
+      },
+      "id": "be555ebc-227d-45c4-982d-9a7e5c027df8",
+      "name": "getMenu: Resolve Branch & Ensure Call",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3952,
+        192
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT item_id, external_item_id, category, name, description, price, currency, tax_rate,\n       spice_level, is_vegetarian, is_vegan, is_jain, is_gluten_free, is_halal,\n       allergens, is_bestseller, is_seasonal, modifiers\nFROM voiceai.menu_items\nWHERE branch_id = $1::uuid\n  AND is_available = true\n  AND ($2::text IS NULL OR category ILIKE $2)\n  AND ($3::text IS NULL OR spice_level::text = $3)\n  AND ($4::boolean IS NULL OR is_bestseller = $4)\n  AND ($5::boolean IS NULL OR is_seasonal = $5)\n  AND ($6::text IS NULL OR name ILIKE '%' || $6 || '%')\n  AND ($7::text[] IS NULL OR (\n        (NOT ($7 @> ARRAY['vegetarian']) OR is_vegetarian) AND\n        (NOT ($7 @> ARRAY['vegan']) OR is_vegan) AND\n        (NOT ($7 @> ARRAY['jain']) OR is_jain) AND\n        (NOT ($7 @> ARRAY['gluten_free']) OR is_gluten_free) AND\n        (NOT ($7 @> ARRAY['halal']) OR is_halal)\n      ))\n  AND ($8::text[] IS NULL OR NOT (allergens && $8))\nORDER BY sort_order NULLS LAST, name\nLIMIT 8;",
+        "options": {
+          "queryReplacement": "={{ [$json.branch_id, $('getMenu: Parse Input').first().json.category || null, $('getMenu: Parse Input').first().json.spice_level || null, $('getMenu: Parse Input').first().json.best_sellers_only ?? null, $('getMenu: Parse Input').first().json.seasonal_only ?? null, $('getMenu: Parse Input').first().json.search_term || null, $('getMenu: Parse Input').first().json.dietary_tags || null, $('getMenu: Parse Input').first().json.allergen_exclude || null] }}"
+        }
+      },
+      "id": "9af4bceb-43e0-487a-9e7e-dcaabeefa795",
+      "name": "getMenu: Query Menu",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4176,
+        192
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 500,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = { items: $input.all().map(i => i.json), count: $input.all().length };\nreturn [{ json: { success: true, ...data } }];"
+      },
+      "id": "79a8732d-3cb9-426d-887b-99208102253f",
+      "name": "getMenu: Format Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4400,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const err = $json.error || {};\nreturn [{ json: { success: false, error_code: err.code || 'DB_ERROR', message: err.message || 'Could not reach the menu database.' } }];"
+      },
+      "id": "34bb9ad7-bad5-4716-9ca2-f1632d55944c",
+      "name": "getMenu: Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4400,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "d319cb35-c8a1-401b-80c5-1af9497d333b",
+      "name": "getMenu: Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4864,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('getMenu: Parse Input').first().json;\nconst result = $json;\nreturn [{ json: {\n  call_id: parsed.callId,\n  tool_call_id: parsed.toolCallId,\n  tool_name: 'getMenu',\n  arguments: JSON.stringify(parsed),\n  result: JSON.stringify(result),\n  success: !!result.success\n} }];"
+      },
+      "id": "2dc04fc5-7ac3-47c6-b548-7bfb64ad3818",
+      "name": "getMenu: Prepare Log Entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4640,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO voiceai.call_tool_invocations (call_id, tool_call_id, tool_name, arguments, result, success)\nVALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)\nON CONFLICT (tool_call_id) DO NOTHING;",
+        "options": {
+          "queryReplacement": "={{ [$json.call_id, $json.tool_call_id, $json.tool_name, $json.arguments, $json.result, $json.success] }}"
+        }
+      },
+      "id": "b1877ea5-0fc5-44a7-a4ba-2e84afd71e27",
+      "name": "getMenu: Log Invocation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4864,
+        336
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "getHours",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "6e0d2020-8bc2-4a33-a0e1-1cf2a0ce483a",
+      "name": "getHours: Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        3520,
+        944
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "httpHeaderAuth (configure in n8n)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\nconst toolCall = (body.message && body.message.toolCalls && body.message.toolCalls[0]) || null;\nconst args = toolCall ? (toolCall.function.arguments || {}) : body;\nfunction genUUID() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\nconst toolCallId = (toolCall && toolCall.id) || args.tool_call_id || genUUID();\nconst callId = args.call_id || args.session_id || args.conversation_id || args.call_sid || body.call_id || body.session_id || body.call_sid || null;\nconst calledNumber = args.to_number || body.to_number || (body.message && body.message.call && body.message.call.phoneNumber) || null;\nreturn [{ json: { callId, toolCallId, calledNumber, ...args } }];"
+      },
+      "id": "5d8c4a74-3527-43ad-83ea-99d68880fc3d",
+      "name": "getHours: Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3744,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH resolved AS (\n  SELECT bpn.branch_id FROM voiceai.branch_phone_numbers bpn\n  WHERE bpn.phone_number = $2 AND bpn.is_active = true\n  LIMIT 1\n)\nINSERT INTO voiceai.calls (call_id, branch_id, started_at)\nSELECT $1, COALESCE((SELECT branch_id FROM resolved), $3::uuid, '97004c8f-e3fe-41d5-88ef-52fd17c58352'::uuid), now()\nWHERE $1 IS NOT NULL\nON CONFLICT (call_id) DO UPDATE\n  SET branch_id = COALESCE(voiceai.calls.branch_id, EXCLUDED.branch_id)\nRETURNING branch_id;",
+        "options": {
+          "queryReplacement": "={{ [$json.callId, $json.calledNumber, $json.branch_id || null] }}"
+        }
+      },
+      "id": "323c689d-bcef-4121-ba3f-e7fa47454281",
+      "name": "getHours: Resolve Branch & Ensure Call",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3968,
+        944
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT b.branch_id, b.name, b.timezone, s.*\nFROM voiceai.branches b\nCROSS JOIN LATERAL voiceai.get_branch_open_status(b.branch_id) s\nWHERE b.branch_id = $1::uuid AND b.is_active = true;",
+        "options": {
+          "queryReplacement": "={{ [$json.branch_id] }}"
+        }
+      },
+      "id": "1da5c45a-ea1a-4062-9876-e6884ee940ad",
+      "name": "getHours: Query Hours",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4400,
+        944
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 500,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $input.all()[0] ? $input.all()[0].json : null;\nif (!row) {\n  return [{ json: { success: false, error_code: 'BRANCH_NOT_FOUND', message: 'Could not find hours for this branch.' } }];\n}\nreturn [{ json: {\n  success: true,\n  branch_id: row.branch_id,\n  name: row.name,\n  timezone: row.timezone,\n  is_open: row.is_open,\n  today_open_time: row.today_open_time,\n  today_close_time: row.today_close_time,\n  is_closed_today: row.is_closed_today,\n  next_open_at: row.next_open_at\n} }];"
+      },
+      "id": "7da7d8f6-d3a4-4ccc-9a99-c0a63ff26144",
+      "name": "getHours: Format Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4624,
+        864
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const err = $json.error || {};\nreturn [{ json: { success: false, error_code: err.code || 'DB_ERROR', message: err.message || 'Could not reach the hours database.' } }];"
+      },
+      "id": "5e29c075-ef9d-48a6-8d85-f85fbf7edfbe",
+      "name": "getHours: Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4624,
+        1040
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "c4b17075-aaa2-466d-aacc-79f85f1284d8",
+      "name": "getHours: Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        5072,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('getHours: Parse Input').first().json;\nconst result = $json;\nreturn [{ json: {\n  call_id: parsed.callId,\n  tool_call_id: parsed.toolCallId,\n  tool_name: 'getHours',\n  arguments: JSON.stringify(parsed),\n  result: JSON.stringify(result),\n  success: !!result.success\n} }];"
+      },
+      "id": "9b97db21-89ed-46a7-8e94-9492ca5d2341",
+      "name": "getHours: Prepare Log Entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4848,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO voiceai.call_tool_invocations (call_id, tool_call_id, tool_name, arguments, result, success)\nVALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)\nON CONFLICT (tool_call_id) DO NOTHING;",
+        "options": {
+          "queryReplacement": "={{ [$json.call_id, $json.tool_call_id, $json.tool_name, $json.arguments, $json.result, $json.success] }}"
+        }
+      },
+      "id": "7ebefb53-fb18-4b56-ac4d-5b69d73213c0",
+      "name": "getHours: Log Invocation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        5072,
+        1120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "getLoyalty",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b5f3c651-caa9-42d0-a941-409787d60703",
+      "name": "getLoyalty: Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        3536,
+        1680
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "httpHeaderAuth (configure in n8n)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function genUUID() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\nconst body = $input.first().json.body || {};\nconst toolCall = (body.message && body.message.toolCalls && body.message.toolCalls[0]) || null;\nconst args = toolCall ? (toolCall.function.arguments || {}) : body;\nconst toolCallId = (toolCall && toolCall.id) || args.tool_call_id || genUUID();\nconst callId = args.call_id || args.session_id || args.conversation_id || args.call_sid || body.call_id || body.session_id || body.call_sid || null;\nconst rawPhone = args.phone || (body.message && body.message.call && body.message.call.customer && body.message.call.customer.number) || '';\nconst phone = String(rawPhone).replace(/[^0-9+]/g, '');\nconst phoneValid = /^\\+?[0-9]{10,15}$/.test(phone);\nreturn [{ json: { callId, toolCallId, phone, phoneValid } }];"
+      },
+      "id": "3a58172e-4322-4d02-8dd8-ea280e523f51",
+      "name": "getLoyalty: Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3744,
+        1680
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.phoneValid}}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f59ca0d3-2406-414b-9749-0e269e745b87",
+      "name": "getLoyalty: Guard Invalid Phone",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3984,
+        1680
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { success: false, error_code: 'INVALID_PHONE', message: 'No valid phone number was provided for this call.' } }];"
+      },
+      "id": "f3c7b3d0-9d88-454f-b0e9-1202c0bad4a2",
+      "name": "getLoyalty: Format Invalid Phone",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4208,
+        1552
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO voiceai.customers (phone)\nVALUES ($1)\nON CONFLICT (phone) DO UPDATE SET phone = EXCLUDED.phone\nRETURNING customer_id, name, preferred_language, loyalty_points, loyalty_tier;",
+        "options": {
+          "queryReplacement": "={{ [$json.phone] }}"
+        }
+      },
+      "id": "4517fa4d-3ac7-4688-be84-e1413fe68391",
+      "name": "getLoyalty: Upsert & Fetch",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4208,
+        1776
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 500,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE voiceai.calls\nSET customer_id = $2, customer_phone = $3\nWHERE call_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('getLoyalty: Parse Input').first().json.callId, $json.customer_id, $('getLoyalty: Parse Input').first().json.phone] }}"
+        }
+      },
+      "id": "bdf928a3-e076-4607-8c1a-1cf40f89693b",
+      "name": "getLoyalty: Link Call to Customer",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4432,
+        1680
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $('getLoyalty: Upsert & Fetch').first().json;\nreturn [{ json: { success: true, customer_id: row.customer_id, name: row.name, preferred_language: row.preferred_language, loyalty_points: row.loyalty_points, loyalty_tier: row.loyalty_tier } }];"
+      },
+      "id": "d574a04a-62c3-4de2-b6a8-8130d8082fea",
+      "name": "getLoyalty: Format Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4656,
+        1680
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const err = $json.error || {};\nreturn [{ json: { success: false, error_code: err.code || 'DB_ERROR', message: err.message || 'Could not look up the customer.' } }];"
+      },
+      "id": "ce44a5fa-873f-4aec-8f67-b187cc813996",
+      "name": "getLoyalty: Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4432,
+        1984
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "7629015d-1026-4761-8888-a23fb7b59d8e",
+      "name": "getLoyalty: Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4880,
+        1680
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('getLoyalty: Parse Input').first().json;\nconst result = $json;\nreturn [{ json: {\n  call_id: parsed.callId,\n  tool_call_id: parsed.toolCallId,\n  tool_name: 'getLoyalty',\n  arguments: JSON.stringify({ phone: parsed.phone }),\n  result: JSON.stringify(result),\n  success: !!result.success\n} }];"
+      },
+      "id": "ff41f782-6fc8-4333-84a1-c9d001e92db6",
+      "name": "getLoyalty: Prepare Log Entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4656,
+        1824
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO voiceai.call_tool_invocations (call_id, tool_call_id, tool_name, arguments, result, success)\nVALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)\nON CONFLICT (tool_call_id) DO NOTHING;",
+        "options": {
+          "queryReplacement": "={{ [$json.call_id, $json.tool_call_id, $json.tool_name, $json.arguments, $json.result, $json.success] }}"
+        }
+      },
+      "id": "8582fc0e-b16e-49a9-b1ed-2b0e735705c5",
+      "name": "getLoyalty: Log Invocation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4880,
+        1824
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "callHuman",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "999894d5-91ec-4d11-8f60-b9aa592c4e57",
+      "name": "callHuman: Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        3520,
+        2608
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "httpHeaderAuth (configure in n8n)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function genUUID() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\nconst body = $input.first().json.body || {};\nconst toolCall = (body.message && body.message.toolCalls && body.message.toolCalls[0]) || null;\nconst args = toolCall ? (toolCall.function.arguments || {}) : body;\nconst toolCallId = (toolCall && toolCall.id) || args.tool_call_id || genUUID();\nconst callId = args.call_id || args.session_id || args.conversation_id || args.call_sid || body.call_id || body.session_id || body.call_sid || null;\nconst calledNumber = args.to_number || body.to_number || (body.message && body.message.call && body.message.call.phoneNumber) || null;\nconst orderSummary = args.order_summary || '';\nconst specialInstructions = Array.isArray(args.special_instructions) ? args.special_instructions : [];\nconst escalationReason = args.escalation_reason || 'order_handoff';\nreturn [{ json: { callId, toolCallId, calledNumber, orderSummary, specialInstructions, escalationReason, branch_id: args.branch_id || null } }];"
+      },
+      "id": "843a45d7-55d4-4ad8-a70f-f2ff887a0700",
+      "name": "callHuman: Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3744,
+        2608
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH resolved AS (\n  SELECT bpn.branch_id FROM voiceai.branch_phone_numbers bpn\n  WHERE bpn.phone_number = $2 AND bpn.is_active = true\n  LIMIT 1\n)\nINSERT INTO voiceai.calls (call_id, branch_id, started_at)\nSELECT $1, COALESCE((SELECT branch_id FROM resolved), $3::uuid, '97004c8f-e3fe-41d5-88ef-52fd17c58352'::uuid), now()\nWHERE $1 IS NOT NULL\nON CONFLICT (call_id) DO UPDATE\n  SET branch_id = COALESCE(voiceai.calls.branch_id, EXCLUDED.branch_id)\nRETURNING branch_id;",
+        "options": {
+          "queryReplacement": "={{ [$json.callId, $json.calledNumber, $json.branch_id] }}"
+        }
+      },
+      "id": "a0487645-c706-42f3-b160-f9083bfcdd94",
+      "name": "callHuman: Resolve Branch & Ensure Call",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3968,
+        2608
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  b.manager_phone,\n  b.phone AS branch_phone,\n  (SELECT pn.phone_number FROM voiceai.branch_phone_numbers pn\n   WHERE pn.branch_id = b.branch_id AND pn.is_active = true LIMIT 1) AS direct_line\nFROM voiceai.branches b\nWHERE b.branch_id = $1::uuid AND b.is_active = true;",
+        "options": {
+          "queryReplacement": "={{ [$json.branch_id] }}"
+        }
+      },
+      "id": "c20af281-7ab4-42f4-8278-eec31218c141",
+      "name": "callHuman: Lookup Transfer Target",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4192,
+        2608
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 500,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $input.all().length > 0 ? $input.all()[0].json : {};\n\n// Fallback support number — hardcoded here since $env access can be blocked in Code nodes.\n// TODO: move this to Postgres (voiceai.settings) or a workflow Set node once stable.\nconst GENERAL_SUPPORT_FALLBACK = '+10000000000';\n\nconst target = row.direct_line || row.manager_phone || row.branch_phone || GENERAL_SUPPORT_FALLBACK;\n\nreturn [{\n  json: {\n    transfer_to: target,\n    usedFallback: !row.direct_line && !row.manager_phone && !row.branch_phone\n  }\n}];"
+      },
+      "id": "74cfa304-c859-4675-b7bf-2e1164f9fdbd",
+      "name": "callHuman: Resolve Target",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4416,
+        2512
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE voiceai.calls SET summary = $2, ended_reason = $3 WHERE call_id = $1;\n\nUPDATE voiceai.orders SET status = 'handed_off', handed_off_at = now() WHERE call_id = $1;\n\nINSERT INTO voiceai.call_special_instructions (call_id, instruction)\nSELECT $1, x FROM unnest($4::text[]) AS x\nWHERE NOT EXISTS (\n  SELECT 1 FROM voiceai.call_special_instructions csi\n  WHERE csi.call_id = $1 AND csi.instruction = x AND csi.is_active\n);",
+        "options": {
+          "queryReplacement": "={{ [$('callHuman: Parse Input').first().json.callId, $('callHuman: Parse Input').first().json.orderSummary, $('callHuman: Parse Input').first().json.escalationReason, $('callHuman: Parse Input').first().json.specialInstructions] }}"
+        }
+      },
+      "id": "84d2d925-8472-4c56-8819-994c4edc2a1c",
+      "name": "callHuman: Persist Handoff",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4640,
+        2384
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO voiceai.call_tool_invocations (call_id, tool_call_id, tool_name, arguments, result, success)\nVALUES ($1, $2, 'callHuman', $3::jsonb, $4::jsonb, true)\nON CONFLICT (tool_call_id) DO NOTHING;",
+        "options": {
+          "queryReplacement": "={{ [$('callHuman: Parse Input').first().json.callId, $('callHuman: Parse Input').first().json.toolCallId, JSON.stringify($('callHuman: Parse Input').first().json), JSON.stringify($('callHuman: Resolve Target').first().json)] }}"
+        }
+      },
+      "id": "a76eb83d-4e4f-4431-a3f9-e4009b6da5f2",
+      "name": "callHuman: Log Transfer",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4864,
+        2512
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const target = $('callHuman: Resolve Target').first().json;\nreturn [{ json: { success: true, action: 'transfer', transfer_to: target.transfer_to, used_general_fallback: target.usedFallback } }];"
+      },
+      "id": "b677d739-203e-4005-be95-0687f4e62480",
+      "name": "callHuman: Format Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5088,
+        2512
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const err = $json.error || {};\nreturn [{ json: { success: false, error_code: err.code || 'DB_ERROR', message: err.message || 'Could not look up a transfer target.' } }];"
+      },
+      "id": "c1de5088-30d0-48e5-b102-4552d640be8e",
+      "name": "callHuman: Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4864,
+        2784
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "5f1a8485-787d-45f4-98b4-9cf6e872e314",
+      "name": "callHuman: Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        5312,
+        2608
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "getSpecials",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "738f87c0-acf7-4c52-994c-9a3893459d82",
+      "name": "getSpecials: Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        3504,
+        4096
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "httpHeaderAuth (configure in n8n)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function genUUID() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\nconst body = $input.first().json.body || {};\nconst toolCall = (body.message && body.message.toolCalls && body.message.toolCalls[0]) || null;\nconst args = toolCall ? (toolCall.function.arguments || {}) : body;\nconst toolCallId = (toolCall && toolCall.id) || args.tool_call_id || genUUID();\nconst callId = args.call_id || args.session_id || args.conversation_id || args.call_sid || body.call_id || body.session_id || body.call_sid || null;\nconst calledNumber = args.to_number || body.to_number || (body.message && body.message.call && body.message.call.phoneNumber) || null;\nreturn [{ json: { callId, toolCallId, calledNumber, ...args } }];"
+      },
+      "id": "3518a6d2-18eb-446a-8853-70e86c0ba843",
+      "name": "getSpecials: Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3728,
+        4096
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH resolved AS (\n  SELECT bpn.branch_id FROM voiceai.branch_phone_numbers bpn\n  WHERE bpn.phone_number = $2 AND bpn.is_active = true\n  LIMIT 1\n)\nINSERT INTO voiceai.calls (call_id, branch_id, started_at)\nSELECT $1, COALESCE((SELECT branch_id FROM resolved), $3::uuid, '97004c8f-e3fe-41d5-88ef-52fd17c58352'::uuid), now()\nWHERE $1 IS NOT NULL\nON CONFLICT (call_id) DO UPDATE\n  SET branch_id = COALESCE(voiceai.calls.branch_id, EXCLUDED.branch_id)\nRETURNING branch_id;",
+        "options": {
+          "queryReplacement": "={{ [$json.callId, $json.calledNumber, $json.branch_id || null] }}"
+        }
+      },
+      "id": "38bfbc4b-4d8d-458f-9990-b801e3a1f77a",
+      "name": "getSpecials: Resolve Branch & Ensure Call",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3952,
+        4096
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT title, description, promo_code, discount_type, discount_value, start_date, end_date\nFROM voiceai.promotions\nWHERE branch_id = $1::uuid\n  AND is_active = true\n  AND (start_date IS NULL OR start_date <= CURRENT_DATE)\n  AND (end_date IS NULL OR end_date >= CURRENT_DATE);",
+        "options": {
+          "queryReplacement": "={{ [$json.branch_id] }}"
+        }
+      },
+      "id": "715bf143-9127-49d9-9440-4ab084152ce5",
+      "name": "getSpecials: Query Specials",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4176,
+        4096
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 500,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = { specials: $input.all().map(i => i.json) };\nreturn [{ json: { success: true, ...data } }];"
+      },
+      "id": "db7bcbde-ba15-4801-8945-182544ae8ffa",
+      "name": "getSpecials: Format Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4400,
+        4000
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const err = $json.error || {};\nreturn [{ json: { success: false, error_code: err.code || 'DB_ERROR', message: err.message || 'Could not reach the promotions database.' } }];"
+      },
+      "id": "6e36f114-a6e8-4e01-96fc-938a8cc1de5b",
+      "name": "getSpecials: Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4400,
+        4192
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "dfa6ef28-30c4-440e-a10f-86ccf92689fd",
+      "name": "getSpecials: Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4848,
+        4096
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('getSpecials: Parse Input').first().json;\nconst result = $json;\nreturn [{ json: {\n  call_id: parsed.callId,\n  tool_call_id: parsed.toolCallId,\n  tool_name: 'getSpecials',\n  arguments: JSON.stringify(parsed),\n  result: JSON.stringify(result),\n  success: !!result.success\n} }];"
+      },
+      "id": "2e97787e-4bfa-4c3d-a023-c2434b69e0a4",
+      "name": "getSpecials: Prepare Log Entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4624,
+        4256
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO voiceai.call_tool_invocations (call_id, tool_call_id, tool_name, arguments, result, success)\nVALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)\nON CONFLICT (tool_call_id) DO NOTHING;",
+        "options": {
+          "queryReplacement": "={{ [$json.call_id, $json.tool_call_id, $json.tool_name, $json.arguments, $json.result, $json.success] }}"
+        }
+      },
+      "id": "6ee5f8e1-b3c6-4f05-a66b-2446c3f0459f",
+      "name": "getSpecials: Log Invocation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4848,
+        4256
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "manageCart",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "4425e877-2613-415c-9a4b-f670053701a3",
+      "name": "manageCart: Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        3536,
+        3440
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "httpHeaderAuth (configure in n8n)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function genUUID() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\nconst body = $input.first().json.body || {};\nconst toolCall = (body.message && body.message.toolCalls && body.message.toolCalls[0]) || null;\nconst args = toolCall ? (toolCall.function.arguments || {}) : body;\nconst toolCallId = (toolCall && toolCall.id) || args.tool_call_id || genUUID();\nconst callId = args.call_id || args.session_id || args.conversation_id || args.call_sid || body.call_id || body.session_id || body.call_sid || null;\nreturn [{ json: { ...args, call_id: callId, tool_call_id: toolCallId } }];"
+      },
+      "id": "ead665db-c222-4fd3-bbdd-671babe65bc3",
+      "name": "manageCart: Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3760,
+        3440
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.call_id}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty"
+              },
+              "id": "fdfa9588-6861-4c3a-8fa3-efb599938085"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b35dc58a-19b0-4f07-986d-4a95f520cf11",
+      "name": "manageCart: Guard Missing CallId",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3984,
+        3440
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { success: false, error_code: 'MISSING_CALL_ID', message: 'No call_id could be resolved for this request.' } }];"
+      },
+      "id": "1c31faa5-0046-45a3-971b-8847fd768059",
+      "name": "manageCart: Format Missing Call",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4880,
+        3152
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO voiceai.orders (call_id, branch_id)\nSELECT $1, c.branch_id FROM voiceai.calls c\nWHERE c.call_id = $1 AND c.branch_id IS NOT NULL\nON CONFLICT (call_id) DO UPDATE\n  SET branch_id = voiceai.orders.branch_id\nRETURNING order_id;",
+        "options": {
+          "queryReplacement": "={{ [$json.call_id] }}"
+        }
+      },
+      "id": "59326023-94e2-4263-aa98-fc4b310fa518",
+      "name": "manageCart: Ensure Order",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4208,
+        3536
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ord AS (\n  SELECT o.order_id, o.branch_id FROM voiceai.orders o WHERE o.call_id = $1\n),\nvalidated_item AS (\n  SELECT mi.item_id, mi.name, mi.price\n  FROM voiceai.menu_items mi, ord\n  WHERE mi.item_id = $3::uuid AND mi.branch_id = ord.branch_id AND mi.is_available = true\n),\ndo_add AS (\n  INSERT INTO voiceai.order_items (order_id, item_id, name_snapshot, unit_price_snapshot, quantity, modifiers)\n  SELECT ord.order_id, vi.item_id, vi.name, vi.price, COALESCE($4::int,1), COALESCE($5::jsonb,'[]')\n  FROM ord, validated_item vi\n  WHERE $2 = 'add'\n  RETURNING order_item_id\n),\ndo_remove AS (\n  DELETE FROM voiceai.order_items oi\n  USING ord\n  WHERE oi.order_id = ord.order_id AND oi.item_id = $3::uuid AND $2 = 'remove'\n  RETURNING oi.order_item_id\n),\ndo_update AS (\n  UPDATE voiceai.order_items oi\n  SET quantity = $4::int\n  FROM ord\n  WHERE oi.order_id = ord.order_id AND oi.item_id = $3::uuid AND $2 = 'update_quantity'\n  RETURNING oi.order_item_id\n),\ndo_clear AS (\n  DELETE FROM voiceai.order_items oi\n  USING ord\n  WHERE oi.order_id = ord.order_id AND $2 = 'clear'\n  RETURNING oi.order_item_id\n)\nSELECT\n  (SELECT count(*) FROM ord) AS order_found,\n  (SELECT count(*) FROM do_add) AS added,\n  (SELECT count(*) FROM do_remove) AS removed,\n  (SELECT count(*) FROM do_update) AS updated,\n  (SELECT count(*) FROM do_clear) AS cleared,\n  (SELECT count(*) FROM validated_item) AS item_valid;",
+        "options": {
+          "queryReplacement": "={{ [\n  $('manageCart: Parse Input').first().json.call_id,\n  $('manageCart: Parse Input').first().json.action,\n  $('manageCart: Parse Input').first().json.item_id || null,\n  $('manageCart: Parse Input').first().json.quantity || null,\n  $('manageCart: Parse Input').first().json.modifiers ? JSON.stringify($('manageCart: Parse Input').first().json.modifiers) : null\n] }}"
+        }
+      },
+      "id": "51a6b27b-d68b-4816-8cb9-bd47f984fb7e",
+      "name": "manageCart: Apply Action",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4432,
+        3472
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  o.order_id, o.subtotal, o.tax_total, o.total,\n  COALESCE(jsonb_agg(jsonb_build_object(\n    'order_item_id', oi.order_item_id,\n    'item_id', oi.item_id,\n    'name', oi.name_snapshot,\n    'unit_price', oi.unit_price_snapshot,\n    'quantity', oi.quantity,\n    'modifiers', oi.modifiers,\n    'line_total', oi.line_total\n  ) ORDER BY oi.created_at) FILTER (WHERE oi.order_item_id IS NOT NULL), '[]') AS items\nFROM voiceai.orders o\nLEFT JOIN voiceai.order_items oi ON oi.order_id = o.order_id\nWHERE o.call_id = $1\nGROUP BY o.order_id, o.subtotal, o.tax_total, o.total;",
+        "options": {
+          "queryReplacement": "={{ [$('manageCart: Parse Input').first().json.call_id] }}"
+        }
+      },
+      "id": "f3bb737f-db20-43e4-abbc-0c076b6f121f",
+      "name": "manageCart: Fetch Cart",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4656,
+        3392
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const action = $('manageCart: Apply Action').first().json;\nconst cartRow = $input.all()[0] ? $input.all()[0].json : null;\n\nif (!action.order_found || Number(action.order_found) === 0) {\n  return [{ json: { success: false, error_code: 'NO_ORDER_CONTEXT', message: 'No active order found for this call. Branch may not be resolved yet — call getHours or getMenu first.' } }];\n}\n\nconst parsed = $('manageCart: Parse Input').first().json;\nif (parsed.action === 'add' && Number(action.item_valid) === 0) {\n  return [{ json: { success: false, error_code: 'ITEM_UNAVAILABLE', message: 'That item is not available at this branch.' } }];\n}\n\nreturn [{ json: { success: true, cart: cartRow ? { items: cartRow.items, subtotal: cartRow.subtotal, tax_total: cartRow.tax_total, total: cartRow.total } : { items: [], subtotal: 0, tax_total: 0, total: 0 } } }];"
+      },
+      "id": "a28169f0-37d1-49ee-b90d-ee87f40b6e52",
+      "name": "manageCart: Format Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4880,
+        3344
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const err = $json.error || {};\nconst msg = err.message || '';\n\nif (msg.includes('invalid input syntax for type uuid')) {\n  return [{ json: {\n    success: false,\n    error_code: 'INVALID_ITEM_ID',\n    message: 'I didn\\'t get a valid item reference for that — could you tell me the item name again so I can look it up?'\n  } }];\n}\n\nreturn [{ json: { success: false, error_code: err.code || 'DB_ERROR', message: err.message || 'Could not update the cart.' } }];"
+      },
+      "id": "6c0a5aa0-8c51-4fe7-bb44-77beb05ddc98",
+      "name": "manageCart: Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4880,
+        3616
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "1156a1d7-fbca-430a-97f6-d368967e7514",
+      "name": "manageCart: Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        5104,
+        3296
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('manageCart: Parse Input').first().json;\nconst result = $json;\nreturn [{ json: {\n  call_id: parsed.call_id,\n  tool_call_id: parsed.tool_call_id,\n  tool_name: 'manageCart',\n  arguments: JSON.stringify(parsed),\n  result: JSON.stringify(result),\n  success: !!result.success\n} }];"
+      },
+      "id": "c233a101-85a1-4091-9aaa-6de9b116e986",
+      "name": "manageCart: Prepare Log Entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5104,
+        3568
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO voiceai.call_tool_invocations (call_id, tool_call_id, tool_name, arguments, result, success)\nVALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)\nON CONFLICT (tool_call_id) DO NOTHING;",
+        "options": {
+          "queryReplacement": "={{ [$json.call_id, $json.tool_call_id, $json.tool_name, $json.arguments, $json.result, $json.success] }}"
+        }
+      },
+      "id": "50d1b411-80ea-4999-a02d-63bb812744d8",
+      "name": "manageCart: Log Invocation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        5328,
+        3568
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "hour": 2
+            }
+          ]
+        }
+      },
+      "id": "055300cc-ace1-480b-8611-7aa9e193da91",
+      "name": "RetentionCleanup: Daily Trigger (2AM)",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        3536,
+        5024
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "51a9b604-ad27-4f67-8e3b-b905e8b0113f",
+      "name": "RetentionCleanup: Manual Test Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        3536,
+        5232
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH expired_orders AS (\n  SELECT o.order_id, o.call_id\n  FROM voiceai.orders o\n  WHERE o.created_at < (now() - INTERVAL '20 days')\n),\ndel_order_items AS (\n  DELETE FROM voiceai.order_items oi\n  WHERE oi.order_id IN (SELECT order_id FROM expired_orders)\n  RETURNING oi.order_item_id\n),\ndel_special_instructions AS (\n  DELETE FROM voiceai.call_special_instructions csi\n  WHERE csi.call_id IN (SELECT call_id FROM expired_orders)\n  RETURNING csi.call_id\n),\ndel_tool_invocations AS (\n  DELETE FROM voiceai.call_tool_invocations cti\n  WHERE cti.call_id IN (SELECT call_id FROM expired_orders)\n  RETURNING cti.call_id\n),\ndel_orders AS (\n  DELETE FROM voiceai.orders o\n  WHERE o.order_id IN (SELECT order_id FROM expired_orders)\n  RETURNING o.order_id\n),\ndel_calls AS (\n  DELETE FROM voiceai.calls c\n  WHERE c.call_id IN (SELECT call_id FROM expired_orders)\n  RETURNING c.call_id\n),\nexpired_orderless_calls AS (\n  SELECT c.call_id\n  FROM voiceai.calls c\n  WHERE c.started_at < (now() - INTERVAL '20 days')\n    AND NOT EXISTS (SELECT 1 FROM voiceai.orders o WHERE o.call_id = c.call_id)\n),\ndel_orderless_tool_invocations AS (\n  DELETE FROM voiceai.call_tool_invocations cti\n  WHERE cti.call_id IN (SELECT call_id FROM expired_orderless_calls)\n  RETURNING cti.call_id\n),\ndel_orderless_special_instructions AS (\n  DELETE FROM voiceai.call_special_instructions csi\n  WHERE csi.call_id IN (SELECT call_id FROM expired_orderless_calls)\n  RETURNING csi.call_id\n),\ndel_orderless_calls AS (\n  DELETE FROM voiceai.calls c\n  WHERE c.call_id IN (SELECT call_id FROM expired_orderless_calls)\n  RETURNING c.call_id\n)\nSELECT\n  now() AS run_at,\n  (SELECT count(*) FROM del_orders) AS orders_deleted,\n  (SELECT count(*) FROM del_order_items) AS order_items_deleted,\n  (SELECT count(*) FROM del_special_instructions) + (SELECT count(*) FROM del_orderless_special_instructions) AS special_instructions_deleted,\n  (SELECT count(*) FROM del_tool_invocations) + (SELECT count(*) FROM del_orderless_tool_invocations) AS tool_invocations_deleted,\n  (SELECT count(*) FROM del_calls) + (SELECT count(*) FROM del_orderless_calls) AS calls_deleted;",
+        "options": {}
+      },
+      "id": "451843ec-2fe8-49bf-b1d7-2669120e4c77",
+      "name": "RetentionCleanup: Run Cleanup SQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3760,
+        5136
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $input.first().json;\nreturn [{ json: {\n  run_at: row.run_at,\n  orders_deleted: row.orders_deleted,\n  order_items_deleted: row.order_items_deleted,\n  special_instructions_deleted: row.special_instructions_deleted,\n  tool_invocations_deleted: row.tool_invocations_deleted,\n  calls_deleted: row.calls_deleted,\n  success: true,\n  error_message: null\n} }];"
+      },
+      "id": "70bf9c94-aa55-4a01-83c2-59426d60a031",
+      "name": "RetentionCleanup: Format Success Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3984,
+        5024
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const err = $json.error || {};\nreturn [{ json: {\n  run_at: new Date().toISOString(),\n  orders_deleted: 0,\n  order_items_deleted: 0,\n  special_instructions_deleted: 0,\n  tool_invocations_deleted: 0,\n  calls_deleted: 0,\n  success: false,\n  error_message: err.message || 'Unknown error during retention cleanup.'\n} }];"
+      },
+      "id": "19db34b3-cd71-41db-9a57-e6a0959af14a",
+      "name": "RetentionCleanup: Format Error Log",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3984,
+        5264
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO voiceai.retention_cleanup_log\n  (run_at, orders_deleted, order_items_deleted, special_instructions_deleted, tool_invocations_deleted, calls_deleted, success, error_message)\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8);",
+        "options": {
+          "queryReplacement": "={{ [$json.run_at, $json.orders_deleted, $json.order_items_deleted, $json.special_instructions_deleted, $json.tool_invocations_deleted, $json.calls_deleted, $json.success, $json.error_message] }}"
+        }
+      },
+      "id": "4fb5f098-0d9f-4e4f-af23-54d845c16107",
+      "name": "RetentionCleanup: Insert Log Entry",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4208,
+        5136
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL",
+          "name": "postgres (configure in n8n)"
+        }
+      },
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "getMenu: Webhook": {
+      "main": [
+        [
+          {
+            "node": "getMenu: Parse Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getMenu: Parse Input": {
+      "main": [
+        [
+          {
+            "node": "getMenu: Resolve Branch & Ensure Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getMenu: Resolve Branch & Ensure Call": {
+      "main": [
+        [
+          {
+            "node": "getMenu: Query Menu",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "getMenu: Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getMenu: Query Menu": {
+      "main": [
+        [
+          {
+            "node": "getMenu: Format Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "getMenu: Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getMenu: Format Success": {
+      "main": [
+        [
+          {
+            "node": "getMenu: Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getMenu: Prepare Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getMenu: Format Error": {
+      "main": [
+        [
+          {
+            "node": "getMenu: Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getMenu: Prepare Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getMenu: Prepare Log Entry": {
+      "main": [
+        [
+          {
+            "node": "getMenu: Log Invocation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getHours: Webhook": {
+      "main": [
+        [
+          {
+            "node": "getHours: Parse Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getHours: Parse Input": {
+      "main": [
+        [
+          {
+            "node": "getHours: Resolve Branch & Ensure Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getHours: Resolve Branch & Ensure Call": {
+      "main": [
+        [
+          {
+            "node": "getHours: Query Hours",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "getHours: Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getHours: Query Hours": {
+      "main": [
+        [
+          {
+            "node": "getHours: Format Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "getHours: Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getHours: Format Success": {
+      "main": [
+        [
+          {
+            "node": "getHours: Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getHours: Prepare Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getHours: Format Error": {
+      "main": [
+        [
+          {
+            "node": "getHours: Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getHours: Prepare Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getHours: Prepare Log Entry": {
+      "main": [
+        [
+          {
+            "node": "getHours: Log Invocation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getLoyalty: Webhook": {
+      "main": [
+        [
+          {
+            "node": "getLoyalty: Parse Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getLoyalty: Parse Input": {
+      "main": [
+        [
+          {
+            "node": "getLoyalty: Guard Invalid Phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getLoyalty: Guard Invalid Phone": {
+      "main": [
+        [
+          {
+            "node": "getLoyalty: Format Invalid Phone",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "getLoyalty: Upsert & Fetch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getLoyalty: Format Invalid Phone": {
+      "main": [
+        [
+          {
+            "node": "getLoyalty: Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getLoyalty: Upsert & Fetch": {
+      "main": [
+        [
+          {
+            "node": "getLoyalty: Link Call to Customer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "getLoyalty: Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getLoyalty: Link Call to Customer": {
+      "main": [
+        [
+          {
+            "node": "getLoyalty: Format Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getLoyalty: Format Success": {
+      "main": [
+        [
+          {
+            "node": "getLoyalty: Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getLoyalty: Prepare Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getLoyalty: Format Error": {
+      "main": [
+        [
+          {
+            "node": "getLoyalty: Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getLoyalty: Prepare Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getLoyalty: Prepare Log Entry": {
+      "main": [
+        [
+          {
+            "node": "getLoyalty: Log Invocation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "callHuman: Webhook": {
+      "main": [
+        [
+          {
+            "node": "callHuman: Parse Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "callHuman: Parse Input": {
+      "main": [
+        [
+          {
+            "node": "callHuman: Resolve Branch & Ensure Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "callHuman: Resolve Branch & Ensure Call": {
+      "main": [
+        [
+          {
+            "node": "callHuman: Lookup Transfer Target",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "callHuman: Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "callHuman: Lookup Transfer Target": {
+      "main": [
+        [
+          {
+            "node": "callHuman: Resolve Target",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "callHuman: Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "callHuman: Resolve Target": {
+      "main": [
+        [
+          {
+            "node": "callHuman: Persist Handoff",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "callHuman: Persist Handoff": {
+      "main": [
+        [
+          {
+            "node": "callHuman: Log Transfer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "callHuman: Log Transfer": {
+      "main": [
+        [
+          {
+            "node": "callHuman: Format Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "callHuman: Format Success": {
+      "main": [
+        [
+          {
+            "node": "callHuman: Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "callHuman: Format Error": {
+      "main": [
+        [
+          {
+            "node": "callHuman: Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getSpecials: Webhook": {
+      "main": [
+        [
+          {
+            "node": "getSpecials: Parse Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getSpecials: Parse Input": {
+      "main": [
+        [
+          {
+            "node": "getSpecials: Resolve Branch & Ensure Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getSpecials: Resolve Branch & Ensure Call": {
+      "main": [
+        [
+          {
+            "node": "getSpecials: Query Specials",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "getSpecials: Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getSpecials: Query Specials": {
+      "main": [
+        [
+          {
+            "node": "getSpecials: Format Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "getSpecials: Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getSpecials: Format Success": {
+      "main": [
+        [
+          {
+            "node": "getSpecials: Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getSpecials: Prepare Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getSpecials: Format Error": {
+      "main": [
+        [
+          {
+            "node": "getSpecials: Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "getSpecials: Prepare Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "getSpecials: Prepare Log Entry": {
+      "main": [
+        [
+          {
+            "node": "getSpecials: Log Invocation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "manageCart: Webhook": {
+      "main": [
+        [
+          {
+            "node": "manageCart: Parse Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "manageCart: Parse Input": {
+      "main": [
+        [
+          {
+            "node": "manageCart: Guard Missing CallId",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "manageCart: Guard Missing CallId": {
+      "main": [
+        [
+          {
+            "node": "manageCart: Format Missing Call",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "manageCart: Ensure Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "manageCart: Format Missing Call": {
+      "main": [
+        [
+          {
+            "node": "manageCart: Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "manageCart: Ensure Order": {
+      "main": [
+        [
+          {
+            "node": "manageCart: Apply Action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "manageCart: Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "manageCart: Apply Action": {
+      "main": [
+        [
+          {
+            "node": "manageCart: Fetch Cart",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "manageCart: Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "manageCart: Fetch Cart": {
+      "main": [
+        [
+          {
+            "node": "manageCart: Format Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "manageCart: Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "manageCart: Format Success": {
+      "main": [
+        [
+          {
+            "node": "manageCart: Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "manageCart: Prepare Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "manageCart: Format Error": {
+      "main": [
+        [
+          {
+            "node": "manageCart: Respond",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "manageCart: Prepare Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "manageCart: Prepare Log Entry": {
+      "main": [
+        [
+          {
+            "node": "manageCart: Log Invocation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RetentionCleanup: Daily Trigger (2AM)": {
+      "main": [
+        [
+          {
+            "node": "RetentionCleanup: Run Cleanup SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RetentionCleanup: Manual Test Trigger": {
+      "main": [
+        [
+          {
+            "node": "RetentionCleanup: Run Cleanup SQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RetentionCleanup: Run Cleanup SQL": {
+      "main": [
+        [
+          {
+            "node": "RetentionCleanup: Format Success Log",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "RetentionCleanup: Format Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RetentionCleanup: Format Success Log": {
+      "main": [
+        [
+          {
+            "node": "RetentionCleanup: Insert Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RetentionCleanup: Format Error Log": {
+      "main": [
+        [
+          {
+            "node": "RetentionCleanup: Insert Log Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "meta": {},
+  "tags": []
+}
